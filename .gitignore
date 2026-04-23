@@ -5,7 +5,7 @@
 .bin/.venv/
 
 # =========================
-# Python cache
+# Python
 # =========================
 __pycache__/
 *.pyc
@@ -13,7 +13,7 @@ __pycache__/
 *.pyd
 
 # =========================
-# Build / distribuição
+# Build
 # =========================
 build/
 dist/
@@ -21,71 +21,43 @@ dist/
 .bin/dist/
 
 # =========================
-# Ficheiros do PyInstaller
-# =========================
-*.spec
-
-# =========================
-# Executáveis
-# Ignorar todos por defeito, mas permitir o final desta app
+# Apenas permitir código
 # =========================
 *.exe
 !Invoice_AutoHandler_*.exe
 
 # =========================
-# Base de dados / runtime / temporários
-# =========================
-*.db
-*.xml
-draft_*.txt
-
-# =========================
-# PDFs e Excel operacionais
+# BLOQUEAR TODOS OS DADOS
 # =========================
 *.pdf
 *.xlsx
 *.xls
+*.csv
+*.db
+*.xml
+*.txt
 
 # =========================
-# Exceções que DEVEM ficar no repositório
+# Permitir código/config essencial
 # =========================
-!splash_saas.png
+!*.py
+!*.json
+
+# =========================
+# Permitir scripts na .bin
+# =========================
 !.bin/**/*.py
 !.bin/**/*.json
-!.bin/**/*.txt
-!.bin/**/*.csv
 
 # =========================
-# IMPORTANTE:
-# garantir que Excel dentro da .bin continua ignorado
-# mesmo com exceções acima
-# =========================
-.bin/**/*.xlsx
-.bin/**/*.xls
-.bin/**/*.pdf
-.bin/**/*.db
-
-# =========================
-# Logs / backups
-# =========================
-logs/
-backup/
-.bin/logs/
-.bin/backup/
-
-# =========================
-# VS Code
+# VS Code / Windows
 # =========================
 .vscode/
-
-# =========================
-# Windows
-# =========================
 Thumbs.db
 Desktop.ini
 
 # =========================
-# Pastas de dados operacionais
+# Pastas operacionais
 # =========================
 ASSINATURAS/
 AYVENS/
@@ -99,14 +71,6 @@ GALP/
 GENERALI/
 HIGIENET/
 LEASEPLAN/
-PETIT FORESTIER/
 PETIT_FORESTIER/
 SAMSIC/
-VIA VERDE/
 VIA_VERDE/
-
-# =========================
-# NÃO guardar o resumo operacional gerado pela app
-# =========================
-faturas_resumo.xlsx
-.bin/faturas_resumo.xlsx
