@@ -4,13 +4,10 @@
 .venv/
 
 # =========================
-# .bin ? ignorar tudo por defeito
+# .bin
 # =========================
 .bin/*
-
-# Permitir apenas código e configs dentro da .bin
 !.bin/**/*.py
-!.bin/**/*.spec
 !.bin/**/*.json
 !.bin/**/*.txt
 
@@ -32,10 +29,10 @@ dist/
 # Executáveis
 # =========================
 *.exe
-!faturas_facilities_*.exe
+!Invoice_AutoHandler_*.exe
 
 # =========================
-# Dados operacionais (IGNORAR)
+# Dados operacionais
 # =========================
 *.pdf
 *.xlsx
@@ -44,7 +41,7 @@ dist/
 *.xml
 draft_*.txt
 
-# Exceções importantes
+# Exceção
 !faturas_resumo.xlsx
 
 # =========================
@@ -65,7 +62,7 @@ Thumbs.db
 Desktop.ini
 
 # =========================
-# Pastas de dados (CRÍTICO)
+# Pastas de dados
 # =========================
 ASSINATURAS/
 AYVENS/
@@ -79,8 +76,6 @@ GALP/
 GENERALI/
 HIGIENET/
 LEASEPLAN/
-PETIT FORESTIER/
+PETIT_FORESTIER/
 SAMSIC/
-VIA VERDE/
-faturas_resumo.xlsx
-splash_saas.png
+VIA_VERDE/
