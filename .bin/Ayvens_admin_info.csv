@@ -1,0 +1,29 @@
+﻿key,value,notes
+email_to,faturas@deco.proteste.pt,Destinatário do rascunho
+extra_produit,PORTAGENS,Produit por defeito para extras Ayvens
+extra_prodfourn,PORTAGENS,ProdFourn por defeito para extras Ayvens
+extra_unite,US,Unidade por defeito para extras Ayvens
+extra_compte,62260300,Compte por defeito para extras Ayvens
+extra_ana1,9,Ana1 por defeito para extras Ayvens
+extra_project,DO5015,PROJECT por defeito para extras Ayvens
+extra_resno,DEP5015,RESNO por defeito para extras Ayvens
+extra_ana4,616220,Ana4 por defeito para extras Ayvens
+extra_ana5,PORTAGENS,Ana5 por defeito para extras Ayvens
+extra_dep,5015,DEP por defeito para extras Ayvens
+extra_interco,9,INTERCO por defeito para extras Ayvens
+extra_ct,BR,CT por defeito para extras Ayvens
+extra_st,,ST por defeito para extras Ayvens
+extra_t,D,T por defeito para extras Ayvens
+rent_ca_202601,211007462,CA de renda AYVENS para 202601
+rent_ca_202602,211007463,CA de renda AYVENS para 202602
+extra_ca_2026,211007548,CA de extras AYVENS para 2026
+rent_ca_202603,211007614,CA de renda AYVENS para 202603
+rent_ca_202604,211007615,CA de renda AYVENS para 202604
+rent_ca_202605,211007616,CA de renda AYVENS para 202605
+rent_ca_202606,211007617,CA de renda AYVENS para 202606
+rent_ca_202607,211007618,CA de renda AYVENS para 202607
+rent_ca_202608,211007619,CA de renda AYVENS para 202608
+rent_ca_202609,211007620,CA de renda AYVENS para 202609
+rent_ca_202610,211007621,CA de renda AYVENS para 202610
+rent_ca_202611,211007622,CA de renda AYVENS para 202611
+rent_ca_202612,211007623,CA de renda AYVENS para 202612

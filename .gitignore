@@ -2,14 +2,7 @@
 # Ambiente virtual
 # =========================
 .venv/
-
-# =========================
-# .bin
-# =========================
-.bin/*
-!.bin/**/*.py
-!.bin/**/*.json
-!.bin/**/*.txt
+.bin/.venv/
 
 # =========================
 # Python cache
@@ -24,31 +17,61 @@ __pycache__/
 # =========================
 build/
 dist/
+.bin/build/
+.bin/dist/
+
+# =========================
+# Ficheiros do PyInstaller
+# =========================
+*.spec
 
 # =========================
 # Executáveis
+# Ignorar todos por defeito, mas permitir o final desta app
 # =========================
 *.exe
 !Invoice_AutoHandler_*.exe
 
 # =========================
-# Dados operacionais
+# Base de dados / runtime / temporários
 # =========================
-*.pdf
-*.xlsx
-*.xls
 *.db
 *.xml
 draft_*.txt
 
-# Exceção
-!faturas_resumo.xlsx
+# =========================
+# PDFs e Excel operacionais
+# =========================
+*.pdf
+*.xlsx
+*.xls
+
+# =========================
+# Exceções que DEVEM ficar no repositório
+# =========================
+!splash_saas.png
+!.bin/**/*.py
+!.bin/**/*.json
+!.bin/**/*.txt
+!.bin/**/*.csv
+
+# =========================
+# IMPORTANTE:
+# garantir que Excel dentro da .bin continua ignorado
+# mesmo com exceções acima
+# =========================
+.bin/**/*.xlsx
+.bin/**/*.xls
+.bin/**/*.pdf
+.bin/**/*.db
 
 # =========================
 # Logs / backups
 # =========================
 logs/
 backup/
+.bin/logs/
+.bin/backup/
 
 # =========================
 # VS Code
@@ -62,7 +85,7 @@ Thumbs.db
 Desktop.ini
 
 # =========================
-# Pastas de dados
+# Pastas de dados operacionais
 # =========================
 ASSINATURAS/
 AYVENS/
@@ -76,6 +99,14 @@ GALP/
 GENERALI/
 HIGIENET/
 LEASEPLAN/
+PETIT FORESTIER/
 PETIT_FORESTIER/
 SAMSIC/
 VIA VERDE/
+VIA_VERDE/
+
+# =========================
+# NÃO guardar o resumo operacional gerado pela app
+# =========================
+faturas_resumo.xlsx
+.bin/faturas_resumo.xlsx
