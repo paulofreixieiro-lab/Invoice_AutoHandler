@@ -1,22 +1,42 @@
+# =========================
 # Ambiente virtual
-.bin/
+# =========================
 .venv/
 
+# =========================
+# .bin ? ignorar tudo por defeito
+# =========================
+.bin/*
+
+# Permitir apenas código e configs dentro da .bin
+!.bin/**/*.py
+!.bin/**/*.spec
+!.bin/**/*.json
+!.bin/**/*.txt
+
+# =========================
 # Python cache
+# =========================
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+# =========================
 # Build / distribuição
+# =========================
 build/
 dist/
 
+# =========================
 # Executáveis
+# =========================
 *.exe
 !faturas_facilities_*.exe
 
-# Dados operacionais
+# =========================
+# Dados operacionais (IGNORAR)
+# =========================
 *.pdf
 *.xlsx
 *.xls
@@ -27,18 +47,26 @@ draft_*.txt
 # Exceções importantes
 !faturas_resumo.xlsx
 
+# =========================
 # Logs / backups
+# =========================
 logs/
 backup/
 
+# =========================
 # VS Code
+# =========================
 .vscode/
 
+# =========================
 # Windows
+# =========================
 Thumbs.db
 Desktop.ini
 
-# Pastas de dados (IMPORTANTÍSSIMO)
+# =========================
+# Pastas de dados (CRÍTICO)
+# =========================
 ASSINATURAS/
 AYVENS/
 BKP/
@@ -53,4 +81,6 @@ HIGIENET/
 LEASEPLAN/
 PETIT FORESTIER/
 SAMSIC/
-VIA_VERDE/
+VIA VERDE/
+faturas_resumo.xlsx
+splash_saas.png
