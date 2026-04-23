@@ -1,0 +1,21 @@
+def get_config_file_path(base_path: Path | None = None) -> Path:
+    if base_path:
+        return base_path / ".bin" / "app_config.json"
+    return default_base_path() / ".bin" / "app_config.json"
+
+def load_app_config() -> dict:
+    cfg_path = get_config_file_path()
+    if cfg_path.exists():
+        try:
+            return json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_app_config(base_path: Path) -> None:
+    cfg_path = get_config_file_path(base_path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        json.dumps({"base_path": str(base_path)}, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
