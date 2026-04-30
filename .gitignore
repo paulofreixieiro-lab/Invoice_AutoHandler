@@ -36,6 +36,7 @@ dist/
 *.db
 *.xml
 *.txt
+*.spec
 
 # =========================
 # Permitir código/config essencial
