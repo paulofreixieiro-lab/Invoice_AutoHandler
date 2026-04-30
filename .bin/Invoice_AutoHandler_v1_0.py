@@ -9,6 +9,7 @@ import getpass
 import shutil
 import sqlite3
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
@@ -51,6 +52,13 @@ EMAIL_TO_DEFAULT = "faturas@deco.proteste.pt"
 EMAIL_CC_DEFAULT = "luis.quaresma@deco.proteste.pt"
 
 APP_VERSION = "1.0"
+
+# --- mini release notes (2026-04) -------------------------------------------
+# Robustez no processamento de faturas:
+# - mantém movimento de ficheiros e refresh da UI mesmo com falhas de BD/Excel
+# - tenta sempre criar rascunho Outlook; falhas surgem em "Notas" sem bloquear
+# - usa fallback de utilizador processador (current_user -> get_local_username)
+# - removida duplicação inválida de process_ayvens que causava erro de sintaxe
 
 EDP_SUMMARY_COLUMNS = [
     "InvoiceNumber", "CA", "Estado", "kWh", "AV (€)", "Valor(€)",
@@ -3736,6 +3744,8 @@ class FaturasFacilitiesV12(tk.Tk):
             return
 
         processed = 0
+        processed_files: list[Path] = []
+        processed_periods: set[str] = set()
         for rec in to_process:
             if not rec.final_name:
                 messagebox.showerror("Erro", f"Nome final não gerado para {rec.file_name}", parent=self)
@@ -3756,6 +3766,8 @@ class FaturasFacilitiesV12(tk.Tk):
             destination_dir = BASE_DIR / supplier / rec.period
             final_path = destination_dir / rec.final_name
             shutil.move(str(rec.source_path), str(final_path))
+            processed_files.append(final_path)
+            processed_periods.add(rec.period)
             register_processed_invoice(supplier, rec.invoice_key, rec.file_hash, rec.invoice_number, rec.period,
                                        rec.doc_type, rec.ca, rec.file_name, rec.final_name, self.current_user)
 
@@ -3822,8 +3834,27 @@ class FaturasFacilitiesV12(tk.Tk):
                 "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
             processed += 1
-        messagebox.showinfo("Sucesso", f"{supplier}: {processed} fatura(s) processada(s).", parent=self)
-        self.load_all()
+        draft_msg = "Sem anexos para criar rascunho."
+        if processed_files:
+            period_hint = min(processed_periods) if processed_periods else datetime.now().strftime("%Y%m")
+            ca_hint = to_process[0].ca if to_process and to_process[0].ca else ""
+            ca_suffix = ca_hint.upper() if ca_hint.upper().startswith("CA") else (f"CA{ca_hint}" if ca_hint else "")
+            subject_parts = [supplier, f"{processed} fatura(s)", period_hint]
+            if ca_suffix:
+                subject_parts.append(ca_suffix)
+            try:
+                _, draft_msg = create_outlook_draft(
+                    subject=" - ".join(subject_parts),
+                    body=build_standard_email_body(),
+                    to_addr=self.email_to.get().strip(),
+                    cc_addr=self.email_cc.get().strip(),
+                    attachments=processed_files,
+                )
+            finally:
+                self.load_all()
+        else:
+            self.load_all()
+        messagebox.showinfo("Sucesso", f"{supplier}: {processed} fatura(s) processada(s).\n{draft_msg}", parent=self)
 
     def process_galp(self):
         doc = self.current_galp_doc()
@@ -3991,26 +4022,31 @@ class FaturasFacilitiesV12(tk.Tk):
             messagebox.showerror("Erro", f"Já existe o ficheiro {final_name}.", parent=self)
             return
 
+        notes: list[str] = []
+        processed_by = getattr(self, "current_user", "") or get_local_username()
         shutil.move(str(doc.source_path), str(final_path))
-        register_processed_invoice(
-            "DELTA",
-            doc.invoice_key,
-            doc.file_hash,
-            doc.invoice_number,
-            period,
-            doc.doc_type,
-            ca,
-            doc.file_name,
-            final_name,
-            self.current_user,
-        )
+        try:
+            register_processed_invoice(
+                "DELTA",
+                doc.invoice_key,
+                doc.file_hash,
+                doc.invoice_number,
+                period,
+                doc.doc_type,
+                ca,
+                doc.file_name,
+                final_name,
+                processed_by,
+            )
+        except Exception as e:
+            notes.append(f"Aviso BD: {e}")
 
         summary_df = pd.DataFrame([{
             "Supplier": "DELTA", "CA": ca, "Periodo": period, "InvoiceNumber": doc.invoice_number,
             "DocType": doc.doc_type, "RowsCount": len(rows_to_process),
             "TotalValorHT": round_money(sum(float(r.get("mnt", 0)) for r in rows_to_process)),
             "Estado": "Processado", "PdfFile": doc.file_name,
-            "FinalPdf": final_name, "ProcessedBy": self.current_user, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "FinalPdf": final_name, "ProcessedBy": processed_by, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }])
         output_df = pd.DataFrame([{
             "Description": r.get("description", ""),
@@ -4088,8 +4124,13 @@ class FaturasFacilitiesV12(tk.Tk):
         if doc.aux_path and doc.aux_path.exists():
             shutil.move(str(doc.aux_path), str(final_aux))
 
-        register_processed_invoice("EVIO", doc.invoice_key, doc.file_hash, doc.invoice_number, period,
-                                   doc.doc_type, ca, doc.file_name, final_pdf_name, self.current_user)
+        notes: list[str] = []
+        processed_by = getattr(self, "current_user", "") or get_local_username()
+        try:
+            register_processed_invoice("EVIO", doc.invoice_key, doc.file_hash, doc.invoice_number, period,
+                                       doc.doc_type, ca, doc.file_name, final_pdf_name, processed_by)
+        except Exception as e:
+            notes.append(f"Aviso BD: {e}")
 
         summary_df = pd.DataFrame([{
             "Supplier": "EVIO", "CA": ca, "Periodo": period, "InvoiceNumber": doc.invoice_number,
@@ -4098,7 +4139,7 @@ class FaturasFacilitiesV12(tk.Tk):
             "Estado": "Processado", "PdfFile": doc.file_name,
             "AuxFile": doc.aux_path.name if doc.aux_path else "",
             "FinalPdf": final_pdf_name, "FinalAux": final_aux.name if final_aux else "",
-            "ProcessedBy": self.current_user,
+            "ProcessedBy": processed_by,
             "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }])
         output_df = pd.DataFrame([{
@@ -4200,15 +4241,23 @@ class FaturasFacilitiesV12(tk.Tk):
             shutil.move(str(p), str(final_path))
             if p.suffix.lower()==".pdf":
                 final_pdfs.append(final_path)
-        register_processed_invoice("VIAVERDE", doc.invoice_key, doc.file_hash, doc.invoice_number, period, doc.doc_type, ca, doc.file_name, ", ".join(fp.name for fp in final_pdfs), self.current_user)
+        notes: list[str] = []
+        processed_by = getattr(self, "current_user", "") or get_local_username()
+        try:
+            register_processed_invoice("VIAVERDE", doc.invoice_key, doc.file_hash, doc.invoice_number, period, doc.doc_type, ca, doc.file_name, ", ".join(fp.name for fp in final_pdfs), processed_by)
+        except Exception as e:
+            notes.append(f"Aviso BD: {e}")
 
         summary_df = pd.DataFrame([{
             "Supplier": "VIAVERDE", "CA": ca, "Periodo": period, "InvoiceNumber": doc.invoice_number,
             "DocType": "standard", "RowsCount": len(doc.rows), "TotalValorHT": round_money(sum(float(r.get("mnt",0) or 0) for r in doc.rows)),
             "Estado": "Processado", "PdfFile": ", ".join(p.name for p in pdfs), "FinalPdf": ", ".join(p.name for p in final_pdfs),
-            "FinalXml": doc.source_path.name, "ProcessedBy": self.current_user, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "FinalXml": doc.source_path.name, "ProcessedBy": processed_by, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }])
-        append_df_to_sheet("VIAVERDE", summary_df)
+        try:
+            append_df_to_sheet("VIAVERDE", summary_df)
+        except Exception as e:
+            notes.append(f"Aviso Excel VIAVERDE: {e}")
 
         output_rows = []
         for row in doc.rows:
@@ -4245,97 +4294,6 @@ class FaturasFacilitiesV12(tk.Tk):
             df.loc[len(df)] = [key, value, ""]
         write_admin_info(path, df)
 
-
-    def process_ayvens(self):
-        doc = self.current_ayvens_doc()
-        if not doc:
-            return
-        if not doc.rows:
-            messagebox.showwarning("Aviso", "Não existem linhas AYVENS para processar.", parent=self)
-            return
-        if not all(r.get("confirmed", False) for r in doc.rows):
-            messagebox.showerror("Erro", "Marca todas as linhas do Agresso antes de processar.", parent=self)
-            return
-        unresolved = [r.get("description", "") for r in doc.rows if bool(r.get("manual_required", False)) or not str(r.get("produit", "")).strip() or not str(r.get("compte", "")).strip()]
-        if unresolved:
-            messagebox.showerror("Erro", "Existem linhas AYVENS por completar ou rever antes de processar:\n- " + "\n- ".join(map(str, unresolved[:10])), parent=self)
-            return
-
-        self.save_current_ayvens_doc_state()
-        period = self.ayvens_period_var.get().strip()
-        if not self.validate_period_value(period):
-            messagebox.showerror("Erro", "Período inválido. Usa YYYYMM, por exemplo 202603.", parent=self)
-            return
-        doc.period = period
-        for row in doc.rows:
-            row["periode"] = period
-
-        ca = self.ayvens_ca_var.get().strip()
-        if not ca:
-            messagebox.showerror("Erro", "Indica o CA actual da AYVENS.", parent=self)
-            return
-
-        self.set_admin_value(AYVENS_ADMIN_FILE, AYVENS_DEFAULT_ADMIN, f"{'extra_ca_' + period[:4] if doc.doc_type == 'extra' else 'rent_ca_' + period}", ca)
-        ca_suffix = ca.upper() if ca.upper().startswith("CA") else f"CA{ca}"
-        subfolder = "EXTRAS" if doc.doc_type == "extra" else "RENDAS"
-        dest_dir = BASE_DIR / "AYVENS" / period / subfolder
-        ensure_dir(dest_dir)
-
-        short_inv = re.sub(r"[^A-Za-z0-9]+", "", doc.invoice_number or "") or "SEMNUMERO"
-        final_name = f"AYVENS_{doc.doc_type.upper()}_{short_inv}_{ca_suffix}{doc.source_path.suffix}"
-        final_path = dest_dir / final_name
-        if final_path.exists():
-            messagebox.showerror("Erro", f"Já existe o ficheiro {final_name}.", parent=self)
-            return
-
-        shutil.move(str(doc.source_path), str(final_path))
-        register_processed_invoice("AYVENS", doc.invoice_key, doc.file_hash, doc.invoice_number, period,
-                                   doc.doc_type, ca, doc.file_name, final_name, self.current_user)
-
-        summary_df = pd.DataFrame([{
-            "Supplier": "AYVENS", "CA": ca, "Periodo": period, "InvoiceNumber": doc.invoice_number,
-            "DocType": doc.doc_type, "RowsCount": len(doc.rows),
-            "TotalValorHT": round_money(sum(float(r.get("mnt", 0)) for r in doc.rows)),
-            "Estado": "Processado", "PdfFile": doc.file_name,
-            "FinalPdf": final_name, "ProcessedBy": self.current_user, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }])
-        output_df = pd.DataFrame([{
-            "Description": r.get("description", ""),
-            "Type": r.get("type", ""),
-            "Produit": r.get("produit", ""),
-            "ProdFourn": r.get("prodfourn", ""),
-            "Unité": r.get("unite", ""),
-            "Période": r.get("periode", ""),
-            "Nombre": r.get("nombre", ""),
-            "PrixUnit": r.get("prixunit", ""),
-            "Mnt HT en dev.": r.get("mnt", ""),
-            "IVA %": r.get("iva", ""),
-            "Code IVA": r.get("code_iva", ""),
-            "Compte": r.get("compte", ""),
-            "Ana1": r.get("ana1", ""),
-            "PROJECT": r.get("project", ""),
-            "RESNO": r.get("resno", ""),
-            "Ana4": r.get("ana4", ""),
-            "Ana5": r.get("ana5", ""),
-            "DEP": r.get("dep", ""),
-            "INTERCO": r.get("interco", ""),
-            "CT": r.get("ct", ""),
-            "ST": r.get("st", ""),
-            "T": r.get("t", ""),
-        } for r in doc.rows])
-        append_df_to_sheet("AYVENS", summary_df)
-        output_df = normalize_currency_df("AYVENS_OUTPUT", output_df)
-        append_df_to_sheet("AYVENS_OUTPUT", output_df)
-
-        ok, msg = create_outlook_draft(
-            subject=f"AYVENS - Fatura {doc.invoice_number} - {period} - {ca_suffix}",
-            body=build_standard_email_body(),
-            to_addr=self.email_to.get().strip() or self.ayvens_admin.get("email_to", ""),
-            cc_addr=self.email_cc.get().strip(),
-            attachments=[final_path]
-        )
-        messagebox.showinfo("Sucesso", f"Fatura AYVENS processada.\n{msg}", parent=self)
-        self.load_all()
 
     def process_samsic(self):
         doc = self.current_samsic_doc()
@@ -7148,16 +7106,30 @@ class FaturasFacilitiesV12(tk.Tk):
         } for r in doc.rows])
         append_df_to_sheet("GALP", summary_df)
         append_df_to_sheet("GALP_OUTPUT", output_df)
+        append_history_row({
+            "Supplier": "GALP",
+            "CA": ca,
+            "Periodo": period,
+            "InvoiceNumber": doc.invoice_number,
+            "DocType": doc.doc_type,
+            "Estado": "Processado",
+            "PdfFile": doc.file_name,
+            "FinalFile": pdf_new.name,
+            "ProcessedBy": self.current_user,
+            "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
 
-        ok, msg = create_outlook_draft(
-            subject=f"GALP - Fatura {doc.invoice_number} - {doc.period} - {ca_suffix}",
-            body=build_standard_email_body(),
-            to_addr=self.email_to.get().strip() or self.galp_admin.get("email_to", ""),
-            cc_addr=self.email_cc.get().strip(),
-            attachments=[pdf_new]
-        )
+        try:
+            ok, msg = create_outlook_draft(
+                subject=f"GALP - Fatura {doc.invoice_number} - {doc.period} - {ca_suffix}",
+                body=build_standard_email_body(),
+                to_addr=self.email_to.get().strip() or self.galp_admin.get("email_to", ""),
+                cc_addr=self.email_cc.get().strip(),
+                attachments=[pdf_new]
+            )
+        finally:
+            self.load_all()
         messagebox.showinfo("Sucesso", f"Fatura GALP processada.\n{msg}", parent=self)
-        self.load_all()
 
 
     def process_delta(self):
@@ -7255,18 +7227,48 @@ class FaturasFacilitiesV12(tk.Tk):
             "IVA %": r.get("iva", ""),
             "Code IVA": r.get("code_iva", ""),
         } for r in rows_to_process])
-        append_df_to_sheet("DELTA", summary_df)
-        append_df_to_sheet("DELTA_OUTPUT", output_df)
+        try:
+            append_df_to_sheet("DELTA", summary_df)
+            append_df_to_sheet("DELTA_OUTPUT", output_df)
+        except Exception as e:
+            notes.append(f"Aviso Excel DELTA: {e}")
+        try:
+            append_history_row({
+                "Supplier": "DELTA",
+                "CA": ca,
+                "Periodo": period,
+                "InvoiceNumber": doc.invoice_number,
+                "DocType": doc.doc_type,
+                "Estado": "Processado",
+                "PdfFile": doc.file_name,
+                "FinalFile": final_name,
+                "ProcessedBy": processed_by,
+                "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        except Exception as e:
+            notes.append(f"Aviso histórico Excel: {e}")
 
-        ok, msg = create_outlook_draft(
-            subject=f"DELTA - Fatura {doc.invoice_number} - {doc.period} - {ca_suffix}",
-            body=build_standard_email_body(),
-            to_addr=self.email_to.get().strip() or self.delta_admin.get("email_to", ""),
-            cc_addr=self.email_cc.get().strip(),
-            attachments=[final_path]
-        )
-        messagebox.showinfo("Sucesso", f"Fatura DELTA processada.\n{msg}", parent=self)
-        self.load_all()
+        msg = "Rascunho não criado."
+        try:
+            _ok, msg = create_outlook_draft(
+                subject=f"DELTA - Fatura {doc.invoice_number} - {doc.period} - {ca_suffix}",
+                body=build_standard_email_body(),
+                to_addr=self.email_to.get().strip() or self.delta_admin.get("email_to", ""),
+                cc_addr=self.email_cc.get().strip(),
+                attachments=[final_path]
+            )
+        except Exception as e:
+            notes.append(f"Aviso Outlook: {e}")
+        finally:
+            try:
+                self.load_all()
+                self.update_idletasks()
+            except Exception as e:
+                notes.append(f"Aviso refresh: {e}")
+        extra_notes = ""
+        if notes:
+            extra_notes = "\n\nNotas:\n- " + "\n- ".join(notes)
+        messagebox.showinfo("Sucesso", f"Fatura DELTA processada.\n{msg}{extra_notes}", parent=self)
 
 
     def process_evio(self):
@@ -7357,18 +7359,48 @@ class FaturasFacilitiesV12(tk.Tk):
             "ST": r.get("st", ""),
             "T": r.get("t", ""),
         } for r in doc.rows])
-        append_df_to_sheet("EVIO", summary_df)
-        append_df_to_sheet("EVIO_OUTPUT", output_df)
+        try:
+            append_df_to_sheet("EVIO", summary_df)
+            append_df_to_sheet("EVIO_OUTPUT", output_df)
+        except Exception as e:
+            notes.append(f"Aviso Excel EVIO: {e}")
+        try:
+            append_history_row({
+                "Supplier": "EVIO",
+                "CA": ca,
+                "Periodo": period,
+                "InvoiceNumber": doc.invoice_number,
+                "DocType": doc.doc_type,
+                "Estado": "Processado",
+                "PdfFile": doc.file_name,
+                "FinalFile": final_pdf_name,
+                "ProcessedBy": processed_by,
+                "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        except Exception as e:
+            notes.append(f"Aviso histórico Excel: {e}")
 
-        ok, msg = create_outlook_draft(
-            subject=f"EVIO - Fatura {doc.invoice_number} - {period} - {ca_suffix}",
-            body=build_standard_email_body(),
-            to_addr=self.email_to.get().strip() or self.evio_admin.get("email_to", ""),
-            cc_addr=self.email_cc.get().strip(),
-            attachments=[final_pdf]
-        )
-        messagebox.showinfo("Sucesso", f"Fatura EVIO processada.\n{msg}", parent=self)
-        self.load_all()
+        msg = "Rascunho não criado."
+        try:
+            _ok, msg = create_outlook_draft(
+                subject=f"EVIO - Fatura {doc.invoice_number} - {period} - {ca_suffix}",
+                body=build_standard_email_body(),
+                to_addr=self.email_to.get().strip() or self.evio_admin.get("email_to", ""),
+                cc_addr=self.email_cc.get().strip(),
+                attachments=[final_pdf]
+            )
+        except Exception as e:
+            notes.append(f"Aviso Outlook: {e}")
+        finally:
+            try:
+                self.load_all()
+                self.update_idletasks()
+            except Exception as e:
+                notes.append(f"Aviso refresh: {e}")
+        extra_notes = ""
+        if notes:
+            extra_notes = "\n\nNotas:\n- " + "\n- ".join(notes)
+        messagebox.showinfo("Sucesso", f"Fatura EVIO processada.\n{msg}{extra_notes}", parent=self)
 
 
     def process_viaverde(self):
@@ -7450,21 +7482,39 @@ class FaturasFacilitiesV12(tk.Tk):
                 "Ana5": row.get("ana5",""), "DEP": row.get("dep",""), "INTERCO": row.get("interco",""), "CT": row.get("ct",""),
                 "ST": row.get("st",""), "T": row.get("t","")
             })
-        append_df_to_sheet("VIAVERDE_OUTPUT", pd.DataFrame(output_rows))
-        append_history_row({
-            "Supplier":"VIAVERDE","CA":ca,"Periodo":period,"InvoiceNumber":doc.invoice_number,"DocType":"standard",
-            "Estado":"Processado","PdfFile":", ".join(p.name for p in pdfs),"FinalFile":", ".join(p.name for p in final_pdfs),
-            "ProcessedBy":self.current_user,"ProcessedAt":datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        ok, msg = create_outlook_draft(
-            subject=f"VIA VERDE - {period} - {ca_suffix}",
-            body=build_standard_email_body(),
-            to_addr=self.email_to.get().strip() or self.viaverde_admin.get("email_to", ""),
-            cc_addr=self.email_cc.get().strip(),
-            attachments=final_pdfs
-        )
-        messagebox.showinfo("Sucesso", f"Via Verde processada.\n{msg}", parent=self)
-        self.load_all()
+        try:
+            append_df_to_sheet("VIAVERDE_OUTPUT", pd.DataFrame(output_rows))
+        except Exception as e:
+            notes.append(f"Aviso Excel VIAVERDE_OUTPUT: {e}")
+        try:
+            append_history_row({
+                "Supplier":"VIAVERDE","CA":ca,"Periodo":period,"InvoiceNumber":doc.invoice_number,"DocType":"standard",
+                "Estado":"Processado","PdfFile":", ".join(p.name for p in pdfs),"FinalFile":", ".join(p.name for p in final_pdfs),
+                "ProcessedBy":processed_by,"ProcessedAt":datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+        except Exception as e:
+            notes.append(f"Aviso histórico Excel: {e}")
+        msg = "Rascunho não criado."
+        try:
+            _ok, msg = create_outlook_draft(
+                subject=f"VIA VERDE - {period} - {ca_suffix}",
+                body=build_standard_email_body(),
+                to_addr=self.email_to.get().strip() or self.viaverde_admin.get("email_to", ""),
+                cc_addr=self.email_cc.get().strip(),
+                attachments=final_pdfs
+            )
+        except Exception as e:
+            notes.append(f"Aviso Outlook: {e}")
+        finally:
+            try:
+                self.load_all()
+                self.update_idletasks()
+            except Exception as e:
+                notes.append(f"Aviso refresh: {e}")
+        extra_notes = ""
+        if notes:
+            extra_notes = "\n\nNotas:\n- " + "\n- ".join(notes)
+        messagebox.showinfo("Sucesso", f"Via Verde processada.\n{msg}{extra_notes}", parent=self)
 
     def set_admin_value(self, path: Path, defaults: list[dict[str, str]], key: str, value: str):
         info, df = read_admin_info(path, defaults)
@@ -7518,16 +7568,44 @@ class FaturasFacilitiesV12(tk.Tk):
             messagebox.showerror("Erro", f"Já existe o ficheiro {final_name}.", parent=self)
             return
 
+        notes: list[str] = []
+        processed_by = getattr(self, "current_user", "") or get_local_username()
+
+        def run_guarded(label: str, action, timeout_s: float = 6.0) -> bool:
+            result: dict[str, Any] = {}
+
+            def _runner():
+                try:
+                    action()
+                except Exception as exc:
+                    result["error"] = exc
+
+            worker = threading.Thread(target=_runner, daemon=True)
+            worker.start()
+            worker.join(timeout_s)
+            if worker.is_alive():
+                notes.append(f"Aviso {label}: operação demorou demasiado e foi ignorada.")
+                return False
+            if "error" in result:
+                notes.append(f"Aviso {label}: {result['error']}")
+                return False
+            return True
+
         shutil.move(str(doc.source_path), str(final_path))
-        register_processed_invoice("AYVENS", doc.invoice_key, doc.file_hash, doc.invoice_number, period,
-                                   doc.doc_type, ca, doc.file_name, final_name, self.current_user)
+        run_guarded(
+            "BD",
+            lambda: register_processed_invoice(
+                "AYVENS", doc.invoice_key, doc.file_hash, doc.invoice_number, period,
+                doc.doc_type, ca, doc.file_name, final_name, processed_by
+            ),
+        )
 
         summary_df = pd.DataFrame([{
             "Supplier": "AYVENS", "CA": ca, "Periodo": period, "InvoiceNumber": doc.invoice_number,
             "DocType": doc.doc_type, "RowsCount": len(doc.rows),
             "TotalValorHT": round_money(sum(float(r.get("mnt", 0)) for r in doc.rows)),
             "Estado": "Processado", "PdfFile": doc.file_name,
-            "FinalPdf": final_name, "ProcessedBy": self.current_user, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "FinalPdf": final_name, "ProcessedBy": processed_by, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }])
         output_df = pd.DataFrame([{
             "Description": r.get("description", ""),
@@ -7553,18 +7631,42 @@ class FaturasFacilitiesV12(tk.Tk):
             "ST": r.get("st", ""),
             "T": r.get("t", ""),
         } for r in doc.rows])
-        append_df_to_sheet("AYVENS", summary_df)
-        append_df_to_sheet("AYVENS_OUTPUT", output_df)
+        run_guarded("Excel AYVENS", lambda: append_df_to_sheet("AYVENS", summary_df))
+        run_guarded("Excel AYVENS_OUTPUT", lambda: append_df_to_sheet("AYVENS_OUTPUT", output_df))
+        run_guarded("histórico Excel", lambda: append_history_row({
+            "Supplier": "AYVENS",
+            "CA": ca,
+            "Periodo": period,
+            "InvoiceNumber": doc.invoice_number,
+            "DocType": doc.doc_type,
+            "Estado": "Processado",
+            "PdfFile": doc.file_name,
+            "FinalFile": final_name,
+            "ProcessedBy": processed_by,
+            "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }))
 
-        ok, msg = create_outlook_draft(
-            subject=f"AYVENS - Fatura {doc.invoice_number} - {period} - {ca_suffix}",
-            body=build_standard_email_body(),
-            to_addr=self.email_to.get().strip() or self.ayvens_admin.get("email_to", ""),
-            cc_addr=self.email_cc.get().strip(),
-            attachments=[final_path]
-        )
-        messagebox.showinfo("Sucesso", f"Fatura AYVENS processada.\n{msg}", parent=self)
-        self.load_all()
+        msg = "Rascunho não criado."
+        try:
+            _ok, msg = create_outlook_draft(
+                subject=f"AYVENS - Fatura {doc.invoice_number} - {period} - {ca_suffix}",
+                body=build_standard_email_body(),
+                to_addr=self.email_to.get().strip() or self.ayvens_admin.get("email_to", ""),
+                cc_addr=self.email_cc.get().strip(),
+                attachments=[final_path]
+            )
+        except Exception as e:
+            notes.append(f"Aviso Outlook: {e}")
+        finally:
+            try:
+                self.load_all()
+                self.update_idletasks()
+            except Exception as e:
+                notes.append(f"Aviso refresh: {e}")
+        extra_notes = ""
+        if notes:
+            extra_notes = "\n\nNotas:\n- " + "\n- ".join(notes)
+        messagebox.showinfo("Sucesso", f"Fatura AYVENS processada.\n{msg}{extra_notes}", parent=self)
 
     def process_samsic(self):
         doc = self.current_samsic_doc()
@@ -7607,16 +7709,21 @@ class FaturasFacilitiesV12(tk.Tk):
             messagebox.showerror("Erro", f"Já existe o ficheiro {final_name}.", parent=self)
             return
 
+        notes: list[str] = []
+        processed_by = getattr(self, "current_user", "") or get_local_username()
         shutil.move(str(doc.source_path), str(final_path))
-        register_processed_invoice("SAMSIC", doc.invoice_key, doc.file_hash, doc.invoice_number, period,
-                                   doc.doc_type, ca, doc.file_name, final_name, self.current_user)
+        try:
+            register_processed_invoice("SAMSIC", doc.invoice_key, doc.file_hash, doc.invoice_number, period,
+                                       doc.doc_type, ca, doc.file_name, final_name, processed_by)
+        except Exception as e:
+            notes.append(f"Aviso BD: {e}")
 
         summary_df = pd.DataFrame([{
             "Supplier": "SAMSIC", "CA": ca, "Periodo": period, "InvoiceNumber": doc.invoice_number,
             "DocType": doc.doc_type, "RowsCount": len(doc.rows),
             "TotalValorHT": round_money(sum(float(r.get("mnt", 0)) for r in doc.rows)),
             "Estado": "Processado", "PdfFile": doc.file_name,
-            "FinalPdf": final_name, "ProcessedBy": self.current_user, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "FinalPdf": final_name, "ProcessedBy": processed_by, "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }])
         output_df = pd.DataFrame([{
             "Description": r.get("description", ""),
@@ -7630,18 +7737,48 @@ class FaturasFacilitiesV12(tk.Tk):
             "IVA %": r.get("iva", ""),
             "Code IVA": r.get("code_iva", ""),
         } for r in doc.rows])
-        append_df_to_sheet("SAMSIC", summary_df)
-        append_df_to_sheet("SAMSIC_OUTPUT", output_df)
+        try:
+            append_df_to_sheet("SAMSIC", summary_df)
+            append_df_to_sheet("SAMSIC_OUTPUT", output_df)
+        except Exception as e:
+            notes.append(f"Aviso Excel SAMSIC: {e}")
+        try:
+            append_history_row({
+                "Supplier": "SAMSIC",
+                "CA": ca,
+                "Periodo": period,
+                "InvoiceNumber": doc.invoice_number,
+                "DocType": doc.doc_type,
+                "Estado": "Processado",
+                "PdfFile": doc.file_name,
+                "FinalFile": final_name,
+                "ProcessedBy": processed_by,
+                "ProcessedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        except Exception as e:
+            notes.append(f"Aviso histórico Excel: {e}")
 
-        ok, msg = create_outlook_draft(
-            subject=f"SAMSIC - Fatura {doc.invoice_number} - {doc.period} - {ca_suffix}",
-            body=build_standard_email_body(),
-            to_addr=self.email_to.get().strip() or self.samsic_admin.get("email_to", ""),
-            cc_addr=self.email_cc.get().strip(),
-            attachments=[final_path]
-        )
-        messagebox.showinfo("Sucesso", f"Fatura SAMSIC processada.\n{msg}", parent=self)
-        self.load_all()
+        msg = "Rascunho não criado."
+        try:
+            _ok, msg = create_outlook_draft(
+                subject=f"SAMSIC - Fatura {doc.invoice_number} - {doc.period} - {ca_suffix}",
+                body=build_standard_email_body(),
+                to_addr=self.email_to.get().strip() or self.samsic_admin.get("email_to", ""),
+                cc_addr=self.email_cc.get().strip(),
+                attachments=[final_path]
+            )
+        except Exception as e:
+            notes.append(f"Aviso Outlook: {e}")
+        finally:
+            try:
+                self.load_all()
+                self.update_idletasks()
+            except Exception as e:
+                notes.append(f"Aviso refresh: {e}")
+        extra_notes = ""
+        if notes:
+            extra_notes = "\n\nNotas:\n- " + "\n- ".join(notes)
+        messagebox.showinfo("Sucesso", f"Fatura SAMSIC processada.\n{msg}{extra_notes}", parent=self)
 
     # ---------------- logging
     def log(self, msg: str):
